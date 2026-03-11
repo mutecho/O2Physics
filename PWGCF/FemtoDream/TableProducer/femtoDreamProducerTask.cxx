@@ -30,6 +30,7 @@
 #include "Common/DataModel/PIDResponseTOF.h"
 #include "Common/DataModel/PIDResponseTPC.h"
 #include "Common/DataModel/TrackSelectionTables.h"
+#include "Tools/ML/MlResponse.h"
 
 #include "DataFormatsParameters/GRPMagField.h"
 #include "DataFormatsParameters/GRPObject.h"
@@ -64,8 +65,14 @@ static constexpr int nCutScores = 2;
 static constexpr double binsPt[nBinsPt + 1] = {0.6, 1., 2., 3., 4., 5., 6., 8., 10.};
 static constexpr int cutDir[nCutScores] = {1, 2}; // CutSmaller=1 (signal > threshold), CutNot=2
 static constexpr double cuts[nBinsPt][nCutScores] = {
-  {0., 0.9}, {0., 0.9}, {0., 0.9}, {0., 0.9},
-  {0., 0.9}, {0., 0.9}, {0., 0.9}, {0., 0.9}};
+  {0., 0.9},
+  {0., 0.9},
+  {0., 0.9},
+  {0., 0.9},
+  {0., 0.9},
+  {0., 0.9},
+  {0., 0.9},
+  {0., 0.9}};
 static const std::vector<std::string> labelsPt = {"pT bin 0", "pT bin 1", "pT bin 2", "pT bin 3", "pT bin 4", "pT bin 5", "pT bin 6", "pT bin 7"};
 static const std::vector<std::string> labelsCutScore = {"Background score", "Signal score"};
 } // namespace femto_cascade_ml
@@ -338,9 +345,14 @@ struct femtoDreamProducerTask {
   Service<o2::ccdb::BasicCCDBManager> ccdb; /// Accessing the CCDB
   RCTFlagsChecker rctChecker;
 
+  struct OmegaHelper {
+    o2::analysis::MlResponse<float> mlResponseOmega;
+    o2::ccdb::CcdbApi ccdbApiOmega;
+  } OmegaHelper;
+
   /// Omega BDT selection (same as PWGLF cascadeflow)
-  o2::analysis::MlResponse<float> mlResponseOmega;
-  o2::ccdb::CcdbApi ccdbApiOmega;
+  // o2::analysis::MlResponse<float> mlResponseOmega;
+  // o2::ccdb::CcdbApi ccdbApiOmega;
 
   void init(InitContext&)
   {
@@ -507,15 +519,15 @@ struct femtoDreamProducerTask {
       std::vector<double> binsPtVec(femto_cascade_ml::binsPt, femto_cascade_ml::binsPt + femto_cascade_ml::nBinsPt + 1);
       std::vector<int> cutDirVec(femto_cascade_ml::cutDir, femto_cascade_ml::cutDir + femto_cascade_ml::nCutScores);
       o2::framework::LabeledArray<double> cutsMl(&femto_cascade_ml::cuts[0][0], femto_cascade_ml::nBinsPt, femto_cascade_ml::nCutScores, femto_cascade_ml::labelsPt, femto_cascade_ml::labelsCutScore);
-      mlResponseOmega.configure(binsPtVec, cutsMl, cutDirVec, static_cast<uint8_t>(femto_cascade_ml::nCutScores));
+      OmegaHelper.mlResponseOmega.configure(binsPtVec, cutsMl, cutDirVec, static_cast<uint8_t>(femto_cascade_ml::nCutScores));
       if (ConfCascMlSel.loadModelsFromCCDB) {
-        ccdbApiOmega.init(ConfCascMlSel.ccdbUrl);
+        OmegaHelper.ccdbApiOmega.init(ConfCascMlSel.ccdbUrl);
         int64_t ts = ConfCascMlSel.timestampCCDB >= 0 ? ConfCascMlSel.timestampCCDB : 0;
-        mlResponseOmega.setModelPathsCCDB(ConfCascMlSel.onnxFileNamesOmega, ccdbApiOmega, ConfCascMlSel.ModelPathsCCDBOmega, ts);
+        OmegaHelper.mlResponseOmega.setModelPathsCCDB(ConfCascMlSel.onnxFileNamesOmega, OmegaHelper.ccdbApiOmega, ConfCascMlSel.ModelPathsCCDBOmega, ts);
       } else {
-        mlResponseOmega.setModelPathsLocal(ConfCascMlSel.onnxFileNamesOmega);
+        OmegaHelper.mlResponseOmega.setModelPathsLocal(ConfCascMlSel.onnxFileNamesOmega);
       }
-      mlResponseOmega.init();
+      OmegaHelper.mlResponseOmega.init();
       LOG(info) << "FemtoDreamProducer: Omega BDT selection enabled (cascadeflow-style)";
     }
 
@@ -1042,7 +1054,7 @@ struct femtoDreamProducerTask {
                                                casc.dcav0topv(col.posX(), col.posY(), col.posZ()),
                                                casc.bachBaryonCosPA(),
                                                casc.bachBaryonDCAxyToPV()};
-          if (!mlResponseOmega.isSelectedMl(inputFeaturesCasc, casc.pt())) {
+          if (!OmegaHelper.mlResponseOmega.isSelectedMl(inputFeaturesCasc, casc.pt())) {
             continue;
           }
           cascadeCuts.fillQA<1, aod::femtodreamparticle::ParticleType::kCascade, aod::femtodreamparticle::ParticleType::kCascadeV0Child, aod::femtodreamparticle::ParticleType::kCascadeBachelor>(col, casc, posTrackCasc, negTrackCasc, bachTrackCasc);
