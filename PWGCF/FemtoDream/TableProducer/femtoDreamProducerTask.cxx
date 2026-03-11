@@ -38,8 +38,11 @@
 #include "Framework/AnalysisTask.h"
 #include "Framework/HistogramRegistry.h"
 #include "Framework/runDataProcessing.h"
+#include "Framework/LabeledArray.h"
+#include "Tools/ML/MlResponse.h"
 #include "ReconstructionDataFormats/Track.h"
 #include <CCDB/BasicCCDBManager.h>
+#include <Framework/ASoA.h>
 
 #include "Math/Vector4D.h"
 #include "TMath.h"
@@ -54,6 +57,20 @@ using namespace o2::framework;
 using namespace o2::framework::expressions;
 using namespace o2::aod::rctsel;
 using namespace o2::analysis::femtoDream;
+
+// Omega BDT selection: same pT bins and cut scheme as PWGLF cascadeflow
+namespace femto_cascade_ml
+{
+static constexpr int nBinsPt = 8;
+static constexpr int nCutScores = 2;
+static constexpr double binsPt[nBinsPt + 1] = {0.6, 1., 2., 3., 4., 5., 6., 8., 10.};
+static constexpr int cutDir[nCutScores] = {1, 2}; // CutSmaller=1 (signal > threshold), CutNot=2
+static constexpr double cuts[nBinsPt][nCutScores] = {
+  {0., 0.9}, {0., 0.9}, {0., 0.9}, {0., 0.9},
+  {0., 0.9}, {0., 0.9}, {0., 0.9}, {0., 0.9}};
+static const std::vector<std::string> labelsPt = {"pT bin 0", "pT bin 1", "pT bin 2", "pT bin 3", "pT bin 4", "pT bin 5", "pT bin 6", "pT bin 7"};
+static const std::vector<std::string> labelsCutScore = {"Background score", "Signal score"};
+} // namespace femto_cascade_ml
 
 namespace o2::aod
 {
@@ -228,6 +245,24 @@ struct femtoDreamProducerTask {
 
   } ConfCascSel;
 
+  /// Omega ML selection: same pre-selection as PWGLF cascadeflow (pt, TPC rows, optional nSigma) then BDT
+  struct : o2::framework::ConfigurableGroup {
+    Configurable<bool> IsUseMl{"ConfIsUseMl", false, "Using Ml for cascade selection (Omega BDT, same as cascadeflow)"};
+    Configurable<std::string> ccdbUrl{"ccdbUrl", "http://alice-ccdb.cern.ch", "url of the ccdb repository"};
+    Configurable<bool> loadModelsFromCCDB{"loadModelsFromCCDB", false, "Load Omega BDT models from CCDB"};
+    Configurable<int64_t> timestampCCDB{"timestampCCDB", -1, "CCDB timestamp for ML model (-1: unset, 0: run-dependent, >0: specific)"};
+    Configurable<std::vector<std::string>> ModelPathsCCDBOmega{"ModelPathsCCDBOmega", std::vector<std::string>{"Users/c/chdemart/CascadesFlow"}, "Paths of models on CCDB (one per pT bin)"};
+    Configurable<std::vector<std::string>> onnxFileNamesOmega{"onnxFileNamesOmega", std::vector<std::string>{"model_onnx.onnx"}, "ONNX file names for each pT bin (if not from CCDB full path)"};
+    Configurable<std::string> AcceptancePathsCCDBOmega{"AcceptancePathsCCDBOmega", "Users/c/chdemart/AcceptanceOmega", "Paths of Omega acceptance on CCDB"};
+    /// Pre-selection aligned with cascadeflow (applied before ML)
+    Configurable<float> MinPtCascMl{"MinPtCascMl", 0.6f, "Min pt of cascade for ML (cascadeflow default)"};
+    Configurable<float> MaxPtCascMl{"MaxPtCascMl", 10.f, "Max pt of cascade for ML (cascadeflow default)"};
+    Configurable<int> Mintpccrrows{"Mintpccrrows", 70, "Min TPC crossed rows for cascade daughters (cascadeflow default)"};
+    Configurable<bool> DoNTPCSigmaCut{"DoNTPCSigmaCut", true, "Apply TPC nSigma cut on V0 daughters (Lambda hypothesis, as in cascadeflow)"};
+    Configurable<float> NsigmatpcPr{"NsigmatpcPr", 5.f, "Max |nSigma| TPC for proton (cascadeflow default)"};
+    Configurable<float> NsigmatpcPi{"NsigmatpcPi", 5.f, "Max |nSigma| TPC for pion (cascadeflow default)"};
+  } ConfCascMlSel;
+
   // Resonances
   struct : o2::framework::ConfigurableGroup {
     Configurable<float> ConfResoInvMassLowLimit{"ConfResoInvMassLowLimit", 1.011461, "Lower limit of the Reso invariant mass"};
@@ -304,6 +339,10 @@ struct femtoDreamProducerTask {
   float mMagField;
   Service<o2::ccdb::BasicCCDBManager> ccdb; /// Accessing the CCDB
   RCTFlagsChecker rctChecker;
+
+  /// Omega BDT selection (same as PWGLF cascadeflow)
+  o2::analysis::MlResponse<float> mlResponseOmega;
+  o2::ccdb::CcdbApi ccdbApiOmega;
 
   void init(InitContext&)
   {
@@ -464,6 +503,23 @@ struct femtoDreamProducerTask {
     ccdb->setURL("http://alice-ccdb.cern.ch");
     ccdb->setCaching(true);
     ccdb->setLocalObjectValidityChecking();
+
+    /// Omega BDT selection (same as PWGLF cascadeflow): configure and load models when Cascade + Omega + ML
+    if (ConfIsActivateCascade && ConfCascSel.ConfCascIsSelectedOmega && ConfCascMlSel.IsUseMl) {
+      std::vector<double> binsPtVec(femto_cascade_ml::binsPt, femto_cascade_ml::binsPt + femto_cascade_ml::nBinsPt + 1);
+      std::vector<int> cutDirVec(femto_cascade_ml::cutDir, femto_cascade_ml::cutDir + femto_cascade_ml::nCutScores);
+      o2::framework::LabeledArray<double> cutsMl(&femto_cascade_ml::cuts[0][0], femto_cascade_ml::nBinsPt, femto_cascade_ml::nCutScores, femto_cascade_ml::labelsPt, femto_cascade_ml::labelsCutScore);
+      mlResponseOmega.configure(binsPtVec, cutsMl, cutDirVec, static_cast<uint8_t>(femto_cascade_ml::nCutScores));
+      if (ConfCascMlSel.loadModelsFromCCDB) {
+        ccdbApiOmega.init(ConfCascMlSel.ccdbUrl);
+        int64_t ts = ConfCascMlSel.timestampCCDB >= 0 ? ConfCascMlSel.timestampCCDB : 0;
+        mlResponseOmega.setModelPathsCCDB(ConfCascMlSel.onnxFileNamesOmega, ccdbApiOmega, ConfCascMlSel.ModelPathsCCDBOmega, ts);
+      } else {
+        mlResponseOmega.setModelPathsLocal(ConfCascMlSel.onnxFileNamesOmega);
+      }
+      mlResponseOmega.init();
+      LOG(info) << "FemtoDreamProducer: Omega BDT selection enabled (cascadeflow-style)";
+    }
 
     int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     ccdb->setCreatedNotAfter(now);
@@ -947,113 +1003,247 @@ struct femtoDreamProducerTask {
       }
     }
     if (ConfIsActivateCascade.value) {
-      for (auto& casc : fullCascades) {
-        // get the daughter tracks
-        const auto& posTrackCasc = casc.template posTrack_as<TrackType>();
-        const auto& negTrackCasc = casc.template negTrack_as<TrackType>();
-        const auto& bachTrackCasc = casc.template bachelor_as<TrackType>();
+      if (ConfCascMlSel.IsUseMl && ConfCascSel.ConfCascIsSelectedOmega) {
+        /// Omega: apply BDT selection (same input features as PWGLF cascadeflow)
+        for (auto& casc : fullCascades) {
+          const auto& posTrackCasc = casc.template posTrack_as<TrackType>();
+          const auto& negTrackCasc = casc.template negTrack_as<TrackType>();
+          const auto& bachTrackCasc = casc.template bachelor_as<TrackType>();
 
-        cascadeCuts.fillQA<0, aod::femtodreamparticle::ParticleType::kCascade, aod::femtodreamparticle::ParticleType::kCascadeV0Child, aod::femtodreamparticle::ParticleType::kCascadeBachelor>(col, casc, posTrackCasc, negTrackCasc, bachTrackCasc);
-        if (!cascadeCuts.isSelectedMinimal(col, casc, posTrackCasc, negTrackCasc, bachTrackCasc)) {
-          continue;
+          cascadeCuts.fillQA<0, aod::femtodreamparticle::ParticleType::kCascade, aod::femtodreamparticle::ParticleType::kCascadeV0Child, aod::femtodreamparticle::ParticleType::kCascadeBachelor>(col, casc, posTrackCasc, negTrackCasc, bachTrackCasc);
+          if (!cascadeCuts.isSelectedMinimal(col, casc, posTrackCasc, negTrackCasc, bachTrackCasc)) {
+            continue;
+          }
+          /// Pre-selection as in cascadeflow: pt window then TPC rows then optional nSigma on V0 daughters
+          if (casc.pt() < ConfCascMlSel.MinPtCascMl || casc.pt() > ConfCascMlSel.MaxPtCascMl) {
+            continue;
+          }
+          if (posTrackCasc.tpcNClsCrossedRows() < ConfCascMlSel.Mintpccrrows || negTrackCasc.tpcNClsCrossedRows() < ConfCascMlSel.Mintpccrrows || bachTrackCasc.tpcNClsCrossedRows() < ConfCascMlSel.Mintpccrrows) {
+            continue;
+          }
+          if (ConfCascMlSel.DoNTPCSigmaCut) {
+            if (casc.sign() < 0) {
+              if (std::abs(posTrackCasc.tpcNSigmaPr()) > ConfCascMlSel.NsigmatpcPr || std::abs(negTrackCasc.tpcNSigmaPi()) > ConfCascMlSel.NsigmatpcPi) {
+                continue;
+              }
+            } else {
+              if (std::abs(posTrackCasc.tpcNSigmaPi()) > ConfCascMlSel.NsigmatpcPi || std::abs(negTrackCasc.tpcNSigmaPr()) > ConfCascMlSel.NsigmatpcPr) {
+                continue;
+              }
+            }
+          }
+          std::vector<float> inputFeaturesCasc{casc.cascradius(),
+                                               casc.v0radius(),
+                                               casc.casccosPA(col.posX(), col.posY(), col.posZ()),
+                                               casc.v0cosPA(col.posX(), col.posY(), col.posZ()),
+                                               casc.dcapostopv(),
+                                               casc.dcanegtopv(),
+                                               casc.dcabachtopv(),
+                                               casc.dcacascdaughters(),
+                                               casc.dcaV0daughters(),
+                                               casc.dcav0topv(col.posX(), col.posY(), col.posZ()),
+                                               casc.bachBaryonCosPA(),
+                                               casc.bachBaryonDCAxyToPV()};
+          if (!mlResponseOmega.isSelectedMl(inputFeaturesCasc, casc.pt())) {
+            continue;
+          }
+          cascadeCuts.fillQA<1, aod::femtodreamparticle::ParticleType::kCascade, aod::femtodreamparticle::ParticleType::kCascadeV0Child, aod::femtodreamparticle::ParticleType::kCascadeBachelor>(col, casc, posTrackCasc, negTrackCasc, bachTrackCasc);
+
+          auto cutContainerCasc = cascadeCuts.getCutContainer<aod::femtodreamparticle::cutContainerType>(col, casc, posTrackCasc, negTrackCasc, bachTrackCasc);
+
+          int poscasctrackID = casc.posTrackId();
+          int rowInPrimaryTrackTablePosCasc = getRowDaughters(poscasctrackID, tmpIDtrack);
+          cascadechildIDs[0] = rowInPrimaryTrackTablePosCasc;
+          cascadechildIDs[1] = 0;
+          cascadechildIDs[2] = 0;
+          outputParts(outputCollision.lastIndex(),
+                      posTrackCasc.pt(),
+                      posTrackCasc.eta(),
+                      posTrackCasc.phi(),
+                      aod::femtodreamparticle::ParticleType::kCascadeV0Child,
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kPosCuts),
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kPosPID),
+                      posTrackCasc.dcaXY(),
+                      cascadechildIDs,
+                      0,
+                      0);
+          const int rowOfPosCascadeTrack = outputParts.lastIndex();
+          if constexpr (isMC) {
+            fillMCParticle(col, posTrackCasc, o2::aod::femtodreamparticle::ParticleType::kCascadeV0Child, ConfCascSel.ConfCascPosDaughPDGCode.value);
+          }
+
+          int negcasctrackID = casc.negTrackId();
+          int rowInPrimaryTrackTableNegCasc = getRowDaughters(negcasctrackID, tmpIDtrack);
+          cascadechildIDs[0] = 0;
+          cascadechildIDs[1] = rowInPrimaryTrackTableNegCasc;
+          cascadechildIDs[2] = 0;
+          outputParts(outputCollision.lastIndex(),
+                      negTrackCasc.pt(),
+                      negTrackCasc.eta(),
+                      negTrackCasc.phi(),
+                      aod::femtodreamparticle::ParticleType::kCascadeV0Child,
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kNegCuts),
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kNegPID),
+                      negTrackCasc.dcaXY(),
+                      cascadechildIDs,
+                      0,
+                      0);
+          const int rowOfNegCascadeTrack = outputParts.lastIndex();
+          if constexpr (isMC) {
+            fillMCParticle(col, negTrackCasc, o2::aod::femtodreamparticle::ParticleType::kCascadeV0Child, ConfCascSel.ConfCascNegDaughPDGCode.value);
+          }
+
+          int bachelorcasctrackID = casc.bachelorId();
+          int rowInPrimaryTrackTableBachelorCasc = getRowDaughters(bachelorcasctrackID, tmpIDtrack);
+          cascadechildIDs[0] = 0;
+          cascadechildIDs[1] = 0;
+          cascadechildIDs[2] = rowInPrimaryTrackTableBachelorCasc;
+          outputParts(outputCollision.lastIndex(),
+                      bachTrackCasc.pt(),
+                      bachTrackCasc.eta(),
+                      bachTrackCasc.phi(),
+                      aod::femtodreamparticle::ParticleType::kCascadeBachelor,
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kBachCuts),
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kBachPID),
+                      bachTrackCasc.dcaXY(),
+                      cascadechildIDs,
+                      0,
+                      0);
+          const int rowOfBachelorCascadeTrack = outputParts.lastIndex();
+          if constexpr (isMC) {
+            fillMCParticle(col, bachTrackCasc, o2::aod::femtodreamparticle::ParticleType::kCascadeBachelor, ConfCascSel.ConfCascBachDaughPDGCode.value);
+          }
+
+          float invMassCasc = casc.mOmega();
+          std::vector<int> indexCascadeChildID = {rowOfPosCascadeTrack, rowOfNegCascadeTrack, rowOfBachelorCascadeTrack};
+          outputParts(outputCollision.lastIndex(),
+                      casc.pt(),
+                      casc.eta(),
+                      casc.phi(),
+                      aod::femtodreamparticle::ParticleType::kCascade,
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kCascade),
+                      0,
+                      casc.casccosPA(col.posX(), col.posY(), col.posZ()),
+                      indexCascadeChildID,
+                      invMassCasc,
+                      casc.mLambda());
+          if constexpr (isMC) {
+            fillMCParticle(col, casc, o2::aod::femtodreamparticle::ParticleType::kCascade, ConfCascSel.ConfCascPDGCode);
+          }
+
+          if (ConfIsDebug.value) {
+            fillDebugCascade(casc, col);
+          }
         }
-        cascadeCuts.fillQA<1, aod::femtodreamparticle::ParticleType::kCascade, aod::femtodreamparticle::ParticleType::kCascadeV0Child, aod::femtodreamparticle::ParticleType::kCascadeBachelor>(col, casc, posTrackCasc, negTrackCasc, bachTrackCasc);
+      } else {
+        for (auto& casc : fullCascades) {
+          // get the daughter tracks
+          const auto& posTrackCasc = casc.template posTrack_as<TrackType>();
+          const auto& negTrackCasc = casc.template negTrack_as<TrackType>();
+          const auto& bachTrackCasc = casc.template bachelor_as<TrackType>();
 
-        // auto cutContainerCasc = cascadeCuts.getCutContainer<aod::femtodreamparticle::cutContainerType>(col, casc, v0daugh, posTrackCasc, negTrackCasc, bachTrackCasc);
-        auto cutContainerCasc = cascadeCuts.getCutContainer<aod::femtodreamparticle::cutContainerType>(col, casc, posTrackCasc, negTrackCasc, bachTrackCasc);
+          cascadeCuts.fillQA<0, aod::femtodreamparticle::ParticleType::kCascade, aod::femtodreamparticle::ParticleType::kCascadeV0Child, aod::femtodreamparticle::ParticleType::kCascadeBachelor>(col, casc, posTrackCasc, negTrackCasc, bachTrackCasc);
+          if (!cascadeCuts.isSelectedMinimal(col, casc, posTrackCasc, negTrackCasc, bachTrackCasc)) {
+            continue;
+          }
+          cascadeCuts.fillQA<1, aod::femtodreamparticle::ParticleType::kCascade, aod::femtodreamparticle::ParticleType::kCascadeV0Child, aod::femtodreamparticle::ParticleType::kCascadeBachelor>(col, casc, posTrackCasc, negTrackCasc, bachTrackCasc);
 
-        // Fill positive child
-        int poscasctrackID = casc.posTrackId();
-        int rowInPrimaryTrackTablePosCasc = -1;
-        rowInPrimaryTrackTablePosCasc = getRowDaughters(poscasctrackID, tmpIDtrack);
-        cascadechildIDs[0] = rowInPrimaryTrackTablePosCasc;
-        cascadechildIDs[1] = 0;
-        cascadechildIDs[2] = 0;
-        outputParts(outputCollision.lastIndex(),
-                    posTrackCasc.pt(),
-                    posTrackCasc.eta(),
-                    posTrackCasc.phi(),
-                    aod::femtodreamparticle::ParticleType::kCascadeV0Child,
-                    cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kPosCuts),
-                    cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kPosPID),
-                    posTrackCasc.dcaXY(),
-                    cascadechildIDs,
-                    0,
-                    0);
-        const int rowOfPosCascadeTrack = outputParts.lastIndex();
-        if constexpr (isMC) {
-          fillMCParticle(col, posTrackCasc, o2::aod::femtodreamparticle::ParticleType::kCascadeV0Child, ConfCascSel.ConfCascPosDaughPDGCode.value);
-        }
+          // auto cutContainerCasc = cascadeCuts.getCutContainer<aod::femtodreamparticle::cutContainerType>(col, casc, v0daugh, posTrackCasc, negTrackCasc, bachTrackCasc);
+          auto cutContainerCasc = cascadeCuts.getCutContainer<aod::femtodreamparticle::cutContainerType>(col, casc, posTrackCasc, negTrackCasc, bachTrackCasc);
 
-        // Fill negative child
-        int negcasctrackID = casc.negTrackId();
-        int rowInPrimaryTrackTableNegCasc = -1;
-        rowInPrimaryTrackTableNegCasc = getRowDaughters(negcasctrackID, tmpIDtrack);
-        cascadechildIDs[0] = 0;
-        cascadechildIDs[1] = rowInPrimaryTrackTableNegCasc;
-        cascadechildIDs[2] = 0;
-        outputParts(outputCollision.lastIndex(),
-                    negTrackCasc.pt(),
-                    negTrackCasc.eta(),
-                    negTrackCasc.phi(),
-                    aod::femtodreamparticle::ParticleType::kCascadeV0Child,
-                    cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kNegCuts),
-                    cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kNegPID),
-                    negTrackCasc.dcaXY(),
-                    cascadechildIDs,
-                    0,
-                    0);
-        const int rowOfNegCascadeTrack = outputParts.lastIndex();
-        if constexpr (isMC) {
-          fillMCParticle(col, negTrackCasc, o2::aod::femtodreamparticle::ParticleType::kCascadeV0Child, ConfCascSel.ConfCascNegDaughPDGCode.value);
-        }
+          // Fill positive child
+          int poscasctrackID = casc.posTrackId();
+          int rowInPrimaryTrackTablePosCasc = -1;
+          rowInPrimaryTrackTablePosCasc = getRowDaughters(poscasctrackID, tmpIDtrack);
+          cascadechildIDs[0] = rowInPrimaryTrackTablePosCasc;
+          cascadechildIDs[1] = 0;
+          cascadechildIDs[2] = 0;
+          outputParts(outputCollision.lastIndex(),
+                      posTrackCasc.pt(),
+                      posTrackCasc.eta(),
+                      posTrackCasc.phi(),
+                      aod::femtodreamparticle::ParticleType::kCascadeV0Child,
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kPosCuts),
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kPosPID),
+                      posTrackCasc.dcaXY(),
+                      cascadechildIDs,
+                      0,
+                      0);
+          const int rowOfPosCascadeTrack = outputParts.lastIndex();
+          if constexpr (isMC) {
+            fillMCParticle(col, posTrackCasc, o2::aod::femtodreamparticle::ParticleType::kCascadeV0Child, ConfCascSel.ConfCascPosDaughPDGCode.value);
+          }
 
-        // Fill bachelor child
-        int bachelorcasctrackID = casc.bachelorId();
-        int rowInPrimaryTrackTableBachelorCasc = -1;
-        rowInPrimaryTrackTableBachelorCasc = getRowDaughters(bachelorcasctrackID, tmpIDtrack);
-        cascadechildIDs[0] = 0;
-        cascadechildIDs[1] = 0;
-        cascadechildIDs[2] = rowInPrimaryTrackTableBachelorCasc;
-        outputParts(outputCollision.lastIndex(),
-                    bachTrackCasc.pt(),
-                    bachTrackCasc.eta(),
-                    bachTrackCasc.phi(),
-                    aod::femtodreamparticle::ParticleType::kCascadeBachelor,
-                    cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kBachCuts),
-                    cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kBachPID),
-                    bachTrackCasc.dcaXY(),
-                    cascadechildIDs,
-                    0,
-                    0);
-        const int rowOfBachelorCascadeTrack = outputParts.lastIndex();
-        if constexpr (isMC) {
-          fillMCParticle(col, bachTrackCasc, o2::aod::femtodreamparticle::ParticleType::kCascadeBachelor, ConfCascSel.ConfCascBachDaughPDGCode.value);
-        }
+          // Fill negative child
+          int negcasctrackID = casc.negTrackId();
+          int rowInPrimaryTrackTableNegCasc = -1;
+          rowInPrimaryTrackTableNegCasc = getRowDaughters(negcasctrackID, tmpIDtrack);
+          cascadechildIDs[0] = 0;
+          cascadechildIDs[1] = rowInPrimaryTrackTableNegCasc;
+          cascadechildIDs[2] = 0;
+          outputParts(outputCollision.lastIndex(),
+                      negTrackCasc.pt(),
+                      negTrackCasc.eta(),
+                      negTrackCasc.phi(),
+                      aod::femtodreamparticle::ParticleType::kCascadeV0Child,
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kNegCuts),
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kNegPID),
+                      negTrackCasc.dcaXY(),
+                      cascadechildIDs,
+                      0,
+                      0);
+          const int rowOfNegCascadeTrack = outputParts.lastIndex();
+          if constexpr (isMC) {
+            fillMCParticle(col, negTrackCasc, o2::aod::femtodreamparticle::ParticleType::kCascadeV0Child, ConfCascSel.ConfCascNegDaughPDGCode.value);
+          }
 
-        // Fill cascades
-        float invMassCasc = ConfCascSel.ConfCascIsSelectedOmega ? casc.mOmega() : casc.mXi();
-        std::vector<int> indexCascadeChildID = {rowOfPosCascadeTrack, rowOfNegCascadeTrack, rowOfBachelorCascadeTrack};
-        outputParts(outputCollision.lastIndex(),
-                    casc.pt(),
-                    casc.eta(),
-                    casc.phi(),
-                    aod::femtodreamparticle::ParticleType::kCascade,
-                    cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kCascade),
-                    0,
-                    casc.casccosPA(col.posX(), col.posY(), col.posZ()),
-                    indexCascadeChildID,
-                    invMassCasc,
-                    casc.mLambda());
-        if constexpr (isMC) {
-          fillMCParticle(col, casc, o2::aod::femtodreamparticle::ParticleType::kCascade, ConfCascSel.ConfCascPDGCode);
-        }
+          // Fill bachelor child
+          int bachelorcasctrackID = casc.bachelorId();
+          int rowInPrimaryTrackTableBachelorCasc = -1;
+          rowInPrimaryTrackTableBachelorCasc = getRowDaughters(bachelorcasctrackID, tmpIDtrack);
+          cascadechildIDs[0] = 0;
+          cascadechildIDs[1] = 0;
+          cascadechildIDs[2] = rowInPrimaryTrackTableBachelorCasc;
+          outputParts(outputCollision.lastIndex(),
+                      bachTrackCasc.pt(),
+                      bachTrackCasc.eta(),
+                      bachTrackCasc.phi(),
+                      aod::femtodreamparticle::ParticleType::kCascadeBachelor,
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kBachCuts),
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kBachPID),
+                      bachTrackCasc.dcaXY(),
+                      cascadechildIDs,
+                      0,
+                      0);
+          const int rowOfBachelorCascadeTrack = outputParts.lastIndex();
+          if constexpr (isMC) {
+            fillMCParticle(col, bachTrackCasc, o2::aod::femtodreamparticle::ParticleType::kCascadeBachelor, ConfCascSel.ConfCascBachDaughPDGCode.value);
+          }
 
-        if (ConfIsDebug.value) {
-          fillDebugParticle<true, false>(posTrackCasc);  // QA for positive daughter
-          fillDebugParticle<true, false>(negTrackCasc);  // QA for negative daughter
-          fillDebugParticle<true, false>(bachTrackCasc); // QA for negative daughter
-          fillDebugCascade(casc, col);                   // QA for Cascade
+          // Fill cascades
+          float invMassCasc = ConfCascSel.ConfCascIsSelectedOmega ? casc.mOmega() : casc.mXi();
+          std::vector<int> indexCascadeChildID = {rowOfPosCascadeTrack, rowOfNegCascadeTrack, rowOfBachelorCascadeTrack};
+          outputParts(outputCollision.lastIndex(),
+                      casc.pt(),
+                      casc.eta(),
+                      casc.phi(),
+                      aod::femtodreamparticle::ParticleType::kCascade,
+                      cutContainerCasc.at(femtoDreamCascadeSelection::CascadeContainerPosition::kCascade),
+                      0,
+                      casc.casccosPA(col.posX(), col.posY(), col.posZ()),
+                      indexCascadeChildID,
+                      invMassCasc,
+                      casc.mLambda());
+          if constexpr (isMC) {
+            fillMCParticle(col, casc, o2::aod::femtodreamparticle::ParticleType::kCascade, ConfCascSel.ConfCascPDGCode);
+          }
+
+          if (ConfIsDebug.value) {
+            fillDebugParticle<true, false>(posTrackCasc);  // QA for positive daughter
+            fillDebugParticle<true, false>(negTrackCasc);  // QA for negative daughter
+            fillDebugParticle<true, false>(bachTrackCasc); // QA for negative daughter
+            fillDebugCascade(casc, col);                   // QA for Cascade
+          }
         }
       }
     }

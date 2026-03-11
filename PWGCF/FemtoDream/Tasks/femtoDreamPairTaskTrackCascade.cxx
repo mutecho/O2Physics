@@ -25,6 +25,7 @@
 #include "Framework/HistogramRegistry.h"
 #include "Framework/RunningWorkflowInfo.h"
 #include "Framework/runDataProcessing.h"
+#include <Framework/Configurable.h>
 
 #include <sys/stat.h>
 
@@ -80,6 +81,17 @@ struct femtoDreamPairTaskTrackCascade {
   using FDMCParts = soa::Join<o2::aod::FDParticles, o2::aod::FDMCLabels>;
   using FDMCPart = FDMCParts::iterator;
   femtodreamcollision::BitMaskType BitMask = 1;
+
+  /// Setups for machine-learning based cascade selection (done in producer). When CascadeFromMl=true, cascades are already ML-selected; PairTask skips cut and child cuts and only uses mass window + mixing with tracks.
+  struct : ConfigurableGroup {
+    Configurable<bool> CascadeFromMl{"CascadeFromMl", false, "Cascades from producer ML selection: skip CutBit and child cuts in PairTask, only mass window + mix with tracks"};
+    Configurable<std::string> ccdbUrl{"ccdbUrl", "http://alice-ccdb.cern.ch", "url of the ccdb repository"};
+    Configurable<std::vector<std::string>> ModelPathsCCDBOmega{"ModelPathsCCDBOmega", std::vector<std::string>{"Users/c/chdemart/CascadesFlow"}, "Paths of models on CCDB"};
+    Configurable<std::vector<std::string>> onnxFileNamesOmega{"onnxFileNamesOmega", std::vector<std::string>{"model_onnx.onnx"}, "ONNX file names for each pT bin (if not from CCDB full path)"};
+    Configurable<std::string> AcceptancePathsCCDBOmega{"AcceptancePathsCCDBOmega", "Users/c/chdemart/AcceptanceOmega", "Paths of Omega acceptance on CCDB"};
+    // Configurable<std::string> ModelPath{"ModelPath", "", "Path to the machine learning model"};
+  } MlSel;
+
   /// Particle 1 (track)
   struct : ConfigurableGroup {
     std::string prefix = std::string("Track1");
@@ -146,28 +158,31 @@ struct femtoDreamPairTaskTrackCascade {
     Configurable<bool> UseChildCuts{"UseChildCuts", true, "Use cuts on the children of the Cascades additional to those of the selection of the cascade builder (for debugging purposes)"};
     Configurable<bool> UseChildPIDCuts{"UseChildPIDCuts", true, "Use PID cuts on the children of the Cascades additional to those of the selection of the cascade builder (for debugging purposes)"};
   } Cascade2;
-  /// Partition for particle 2
+  /// Partition for particle 2. When CascadeFromMl: skip CutBit and V0 daughter mass; only partType, pt, eta, cascade mass window.
   Partition<FDParticles> PartitionCascade2 = (aod::femtodreamparticle::partType == uint8_t(aod::femtodreamparticle::ParticleType::kCascade)) &&
-                                             ((aod::femtodreamparticle::cut & Cascade2.CutBit) == Cascade2.CutBit) &&
+                                             ifnode(MlSel.CascadeFromMl,(((aod::femtodreamparticle::cut & Cascade2.CutBit) == Cascade2.CutBit) &&
                                              (aod::femtodreamparticle::pt > Cascade2.PtMin) &&
                                              (aod::femtodreamparticle::pt < Cascade2.PtMax) &&
                                              (aod::femtodreamparticle::eta > Cascade2.EtaMin) &&
                                              (aod::femtodreamparticle::eta < Cascade2.EtaMax) &&
                                              (aod::femtodreamparticle::mLambda > Cascade2.InvMassMin) &&
-                                             (aod::femtodreamparticle::mLambda < Cascade2.InvMassMax) &&
-                                             (aod::femtodreamparticle::mAntiLambda > Cascade2.InvMassV0DaughMin) &&
-                                             (aod::femtodreamparticle::mAntiLambda < Cascade2.InvMassV0DaughMax);
+                                             (aod::femtodreamparticle::mLambda < Cascade2.InvMassMax)),(((aod::femtodreamparticle::cut & Cascade2.CutBit) == Cascade2.CutBit) &&
+                                             (aod::femtodreamparticle::pt > Cascade2.PtMin) &&
+                                             (aod::femtodreamparticle::pt < Cascade2.PtMax) &&
+                                             (aod::femtodreamparticle::eta > Cascade2.EtaMin) &&
+                                             (aod::femtodreamparticle::eta < Cascade2.EtaMax) &&
+                                             (aod::femtodreamparticle::mLambda > Cascade2.InvMassMin) &&
+                                             (aod::femtodreamparticle::mLambda < Cascade2.InvMassMax) && aod::femtodreamparticle::mAntiLambda > Cascade2.InvMassV0DaughMin && aod::femtodreamparticle::mAntiLambda < Cascade2.InvMassV0DaughMax))       
 
   Partition<FDMCParts> PartitionMCCascade2 = (aod::femtodreamparticle::partType == uint8_t(aod::femtodreamparticle::ParticleType::kCascade)) &&
-                                             ((aod::femtodreamparticle::cut & Cascade2.CutBit) == Cascade2.CutBit) &&
+                                             ifnode(MlSel.CascadeFromMl, true, ((aod::femtodreamparticle::cut & Cascade2.CutBit) == Cascade2.CutBit)) &&
                                              (aod::femtodreamparticle::pt > Cascade2.PtMin) &&
                                              (aod::femtodreamparticle::pt < Cascade2.PtMax) &&
                                              (aod::femtodreamparticle::eta > Cascade2.EtaMin) &&
                                              (aod::femtodreamparticle::eta < Cascade2.EtaMax) &&
                                              (aod::femtodreamparticle::mLambda > Cascade2.InvMassMin) &&
                                              (aod::femtodreamparticle::mLambda < Cascade2.InvMassMax) &&
-                                             (aod::femtodreamparticle::mAntiLambda > Cascade2.InvMassV0DaughMin) &&
-                                             (aod::femtodreamparticle::mAntiLambda < Cascade2.InvMassV0DaughMax);
+                                             ifnode(MlSel.CascadeFromMl, true, (aod::femtodreamparticle::mAntiLambda > Cascade2.InvMassV0DaughMin && aod::femtodreamparticle::mAntiLambda < Cascade2.InvMassV0DaughMax));
 
   /// Histogramming for particle 2
   FemtoDreamParticleHisto<aod::femtodreamparticle::ParticleType::kCascade, 2> trackHistoPartTwo;
@@ -299,8 +314,8 @@ struct femtoDreamPairTaskTrackCascade {
       // femtdream dataformat to take special care of v0 candidates
       // auto posChild = v0.template children_as<S>().front();
       // auto negChild = v0.template children_as<S>().back();
-      // check cuts on V0 children
-      if (!checkChildCuts(posChild, negChild, bachChild)) {
+      // when CascadeFromMl, cascades are already selected in producer; skip child cuts
+      if (!MlSel.CascadeFromMl && !checkChildCuts(posChild, negChild, bachChild)) {
         continue;
       }
 
@@ -315,8 +330,7 @@ struct femtoDreamPairTaskTrackCascade {
       const auto& negChild = parts.iteratorAt(p2.index() - 2);
       const auto& bachChild = parts.iteratorAt(p2.index() - 1);
 
-      // cuts on Cascade children still need to be applied
-      if (!checkChildCuts(posChild, negChild, bachChild)) {
+      if (!MlSel.CascadeFromMl && !checkChildCuts(posChild, negChild, bachChild)) {
         continue;
       }
 
@@ -390,8 +404,7 @@ struct femtoDreamPairTaskTrackCascade {
         const auto& negChild = parts.iteratorAt(p2.globalIndex() - 2);
         const auto& bachChild = parts.iteratorAt(p2.globalIndex() - 1);
 
-        // Cuts on Cascade children still need to be applied
-        if (!checkChildCuts(posChild, negChild, bachChild)) {
+        if (!MlSel.CascadeFromMl && !checkChildCuts(posChild, negChild, bachChild)) {
           continue;
         }
 
