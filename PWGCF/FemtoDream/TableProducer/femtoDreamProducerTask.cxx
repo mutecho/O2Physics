@@ -1013,7 +1013,7 @@ struct femtoDreamProducerTask {
       }
     }
     if (ConfIsActivateCascade.value) {
-      if (CascMlSel.IsUseMl && ConfCascSel.ConfCascIsSelectedOmega) {
+      if (CascMlSel.ConfIsUseMl && ConfCascSel.ConfCascIsSelectedOmega) {
         /// Omega: apply BDT selection (same input features as PWGLF cascadeflow)
         for (auto& casc : fullCascades) {
           const auto& posTrackCasc = casc.template posTrack_as<TrackType>();
