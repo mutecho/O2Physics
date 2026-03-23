@@ -86,9 +86,9 @@ struct femtoDreamPairTaskTrackCascade {
   struct : ConfigurableGroup {
     Configurable<bool> CascadeFromMl{"CascadeFromMl", false, "Cascades from producer ML selection: skip CutBit and child cuts in PairTask, only mass window + mix with tracks"};
     Configurable<std::string> ccdbUrl{"ccdbUrl", "http://alice-ccdb.cern.ch", "url of the ccdb repository"};
-    Configurable<std::vector<std::string>> ModelPathsCCDBOmega{"ModelPathsCCDBOmega", std::vector<std::string>{"Users/c/chdemart/CascadesFlow"}, "Paths of models on CCDB"};
-    Configurable<std::vector<std::string>> onnxFileNamesOmega{"onnxFileNamesOmega", std::vector<std::string>{"model_onnx.onnx"}, "ONNX file names for each pT bin (if not from CCDB full path)"};
-    Configurable<std::string> AcceptancePathsCCDBOmega{"AcceptancePathsCCDBOmega", "Users/c/chdemart/AcceptanceOmega", "Paths of Omega acceptance on CCDB"};
+    Configurable<std::vector<std::string>> ConfModelPathsCCDBOmega{"ConfModelPathsCCDBOmega", std::vector<std::string>{"Users/c/chdemart/CascadesFlow"}, "Paths of models on CCDB"};
+    Configurable<std::vector<std::string>> ConfOnnxFileNamesOmega{"ConfOnnxFileNamesOmega", std::vector<std::string>{"model_onnx.onnx"}, "ONNX file names for each pT bin (if not from CCDB full path)"};
+    Configurable<std::string> ConfAcceptancePathsCCDBOmega{"ConfAcceptancePathsCCDBOmega", "Users/c/chdemart/AcceptanceOmega", "Paths of Omega acceptance on CCDB"};
     // Configurable<std::string> ModelPath{"ModelPath", "", "Path to the machine learning model"};
   } MlSel;
 

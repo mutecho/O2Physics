@@ -252,21 +252,21 @@ struct femtoDreamProducerTask {
 
   /// Omega ML selection: same pre-selection as PWGLF cascadeflow (pt, TPC rows, optional nSigma) then BDT
   struct : o2::framework::ConfigurableGroup {
-    Configurable<bool> IsUseMl{"ConfIsUseMl", false, "Using Ml for cascade selection (Omega BDT, same as cascadeflow)"};
+    Configurable<bool> ConfIsUseMl{"ConfIsUseMl", false, "Using Ml for cascade selection (Omega BDT, same as cascadeflow)"};
     Configurable<std::string> ccdbUrl{"ccdbUrl", "http://alice-ccdb.cern.ch", "url of the ccdb repository"};
-    Configurable<bool> loadModelsFromCCDB{"loadModelsFromCCDB", false, "Load Omega BDT models from CCDB"};
+    Configurable<bool> ConfLoadModelsFromCCDB{"ConfLoadModelsFromCCDB", false, "Load Omega BDT models from CCDB"};
     Configurable<int64_t> timestampCCDB{"timestampCCDB", -1, "CCDB timestamp for ML model (-1: unset, 0: run-dependent, >0: specific)"};
-    Configurable<std::vector<std::string>> ModelPathsCCDBOmega{"ModelPathsCCDBOmega", std::vector<std::string>{"Users/c/chdemart/CascadesFlow"}, "Paths of models on CCDB (one per pT bin)"};
-    Configurable<std::vector<std::string>> onnxFileNamesOmega{"onnxFileNamesOmega", std::vector<std::string>{"model_onnx.onnx"}, "ONNX file names for each pT bin (if not from CCDB full path)"};
-    Configurable<std::string> AcceptancePathsCCDBOmega{"AcceptancePathsCCDBOmega", "Users/c/chdemart/AcceptanceOmega", "Paths of Omega acceptance on CCDB"};
+    Configurable<std::vector<std::string>> ConfModelPathsCCDBOmega{"ConfModelPathsCCDBOmega", std::vector<std::string>{"Users/c/chdemart/CascadesFlow"}, "Paths of models on CCDB (one per pT bin)"};
+    Configurable<std::vector<std::string>> ConfOnnxFileNamesOmega{"ConfOnnxFileNamesOmega", std::vector<std::string>{"model_onnx.onnx"}, "ONNX file names for each pT bin (if not from CCDB full path)"};
+    Configurable<std::string> ConfAcceptancePathsCCDBOmega{"ConfAcceptancePathsCCDBOmega", "Users/c/chdemart/AcceptanceOmega", "Paths of Omega acceptance on CCDB"};
     /// Pre-selection aligned with cascadeflow (applied before ML)
-    Configurable<float> MinPtCascMl{"MinPtCascMl", 0.6f, "Min pt of cascade for ML (cascadeflow default)"};
-    Configurable<float> MaxPtCascMl{"MaxPtCascMl", 10.f, "Max pt of cascade for ML (cascadeflow default)"};
-    Configurable<int> Mintpccrrows{"Mintpccrrows", 70, "Min TPC crossed rows for cascade daughters (cascadeflow default)"};
-    Configurable<bool> DoNTPCSigmaCut{"DoNTPCSigmaCut", true, "Apply TPC nSigma cut on V0 daughters (Lambda hypothesis, as in cascadeflow)"};
-    Configurable<float> NsigmatpcPr{"NsigmatpcPr", 5.f, "Max |nSigma| TPC for proton (cascadeflow default)"};
-    Configurable<float> NsigmatpcPi{"NsigmatpcPi", 5.f, "Max |nSigma| TPC for pion (cascadeflow default)"};
-  } ConfCascMlSel;
+    Configurable<float> ConfMinPtCascMl{"ConfMinPtCascMl", 0.6f, "Min pt of cascade for ML (cascadeflow default)"};
+    Configurable<float> ConfMaxPtCascMl{"ConfMaxPtCascMl", 10.f, "Max pt of cascade for ML (cascadeflow default)"};
+    Configurable<int> ConfMintpccrrows{"ConfMintpccrrows", 70, "Min TPC crossed rows for cascade daughters (cascadeflow default)"};
+    Configurable<bool> ConfDoNTPCSigmaCut{"ConfDoNTPCSigmaCut", true, "Apply TPC nSigma cut on V0 daughters (Lambda hypothesis, as in cascadeflow)"};
+    Configurable<float> ConfNsigmatpcPr{"ConfNsigmatpcPr", 5.f, "Max |nSigma| TPC for proton (cascadeflow default)"};
+    Configurable<float> ConfNsigmatpcPi{"ConfNsigmatpcPi", 5.f, "Max |nSigma| TPC for pion (cascadeflow default)"};
+  } CascMlSel;
 
   // Resonances
   struct : o2::framework::ConfigurableGroup {
@@ -515,17 +515,17 @@ struct femtoDreamProducerTask {
     ccdb->setLocalObjectValidityChecking();
 
     /// Omega BDT selection (same as PWGLF cascadeflow): configure and load models when Cascade + Omega + ML
-    if (ConfIsActivateCascade && ConfCascSel.ConfCascIsSelectedOmega && ConfCascMlSel.IsUseMl) {
+    if (ConfIsActivateCascade && ConfCascSel.ConfCascIsSelectedOmega && CascMlSel.ConfIsUseMl) {
       std::vector<double> binsPtVec(femto_cascade_ml::binsPt, femto_cascade_ml::binsPt + femto_cascade_ml::nBinsPt + 1);
       std::vector<int> cutDirVec(femto_cascade_ml::cutDir, femto_cascade_ml::cutDir + femto_cascade_ml::nCutScores);
       o2::framework::LabeledArray<double> cutsMl(&femto_cascade_ml::cuts[0][0], femto_cascade_ml::nBinsPt, femto_cascade_ml::nCutScores, femto_cascade_ml::labelsPt, femto_cascade_ml::labelsCutScore);
       OmegaHelper.mlResponseOmega.configure(binsPtVec, cutsMl, cutDirVec, static_cast<uint8_t>(femto_cascade_ml::nCutScores));
-      if (ConfCascMlSel.loadModelsFromCCDB) {
-        OmegaHelper.ccdbApiOmega.init(ConfCascMlSel.ccdbUrl);
-        int64_t ts = ConfCascMlSel.timestampCCDB >= 0 ? ConfCascMlSel.timestampCCDB : 0;
-        OmegaHelper.mlResponseOmega.setModelPathsCCDB(ConfCascMlSel.onnxFileNamesOmega, OmegaHelper.ccdbApiOmega, ConfCascMlSel.ModelPathsCCDBOmega, ts);
+      if (CascMlSel.ConfLoadModelsFromCCDB) {
+        OmegaHelper.ccdbApiOmega.init(CascMlSel.ccdbUrl);
+        int64_t ts = CascMlSel.timestampCCDB >= 0 ? CascMlSel.timestampCCDB : 0;
+        OmegaHelper.mlResponseOmega.setModelPathsCCDB(CascMlSel.ConfOnnxFileNamesOmega, OmegaHelper.ccdbApiOmega, CascMlSel.ConfModelPathsCCDBOmega, ts);
       } else {
-        OmegaHelper.mlResponseOmega.setModelPathsLocal(ConfCascMlSel.onnxFileNamesOmega);
+        OmegaHelper.mlResponseOmega.setModelPathsLocal(CascMlSel.ConfOnnxFileNamesOmega);
       }
       OmegaHelper.mlResponseOmega.init();
       LOG(info) << "FemtoDreamProducer: Omega BDT selection enabled (cascadeflow-style)";
@@ -1013,7 +1013,7 @@ struct femtoDreamProducerTask {
       }
     }
     if (ConfIsActivateCascade.value) {
-      if (ConfCascMlSel.IsUseMl && ConfCascSel.ConfCascIsSelectedOmega) {
+      if (CascMlSel.IsUseMl && ConfCascSel.ConfCascIsSelectedOmega) {
         /// Omega: apply BDT selection (same input features as PWGLF cascadeflow)
         for (auto& casc : fullCascades) {
           const auto& posTrackCasc = casc.template posTrack_as<TrackType>();
@@ -1025,19 +1025,19 @@ struct femtoDreamProducerTask {
             continue;
           }
           /// Pre-selection as in cascadeflow: pt window then TPC rows then optional nSigma on V0 daughters
-          if (casc.pt() < ConfCascMlSel.MinPtCascMl || casc.pt() > ConfCascMlSel.MaxPtCascMl) {
+          if (casc.pt() < CascMlSel.ConfMinPtCascMl || casc.pt() > CascMlSel.ConfMaxPtCascMl) {
             continue;
           }
-          if (posTrackCasc.tpcNClsCrossedRows() < ConfCascMlSel.Mintpccrrows || negTrackCasc.tpcNClsCrossedRows() < ConfCascMlSel.Mintpccrrows || bachTrackCasc.tpcNClsCrossedRows() < ConfCascMlSel.Mintpccrrows) {
+          if (posTrackCasc.tpcNClsCrossedRows() < CascMlSel.ConfMintpccrrows || negTrackCasc.tpcNClsCrossedRows() < CascMlSel.ConfMintpccrrows || bachTrackCasc.tpcNClsCrossedRows() < CascMlSel.ConfMintpccrrows) {
             continue;
           }
-          if (ConfCascMlSel.DoNTPCSigmaCut) {
+          if (CascMlSel.ConfDoNTPCSigmaCut) {
             if (casc.sign() < 0) {
-              if (std::abs(posTrackCasc.tpcNSigmaPr()) > ConfCascMlSel.NsigmatpcPr || std::abs(negTrackCasc.tpcNSigmaPi()) > ConfCascMlSel.NsigmatpcPi) {
+              if (std::abs(posTrackCasc.tpcNSigmaPr()) > CascMlSel.ConfNsigmatpcPr || std::abs(negTrackCasc.tpcNSigmaPi()) > CascMlSel.ConfNsigmatpcPi) {
                 continue;
               }
             } else {
-              if (std::abs(posTrackCasc.tpcNSigmaPi()) > ConfCascMlSel.NsigmatpcPi || std::abs(negTrackCasc.tpcNSigmaPr()) > ConfCascMlSel.NsigmatpcPr) {
+              if (std::abs(posTrackCasc.tpcNSigmaPi()) > CascMlSel.ConfNsigmatpcPi || std::abs(negTrackCasc.tpcNSigmaPr()) > CascMlSel.ConfNsigmatpcPr) {
                 continue;
               }
             }
